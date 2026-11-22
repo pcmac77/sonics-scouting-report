@@ -1,0 +1,83 @@
+name: Publish Sonics playground
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+concurrency:
+  group: pages
+  cancel-in-progress: true
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: https://pcmac77.github.io/sonics-scouting-report/
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: node --test tests/game.test.mjs
+      - run: npm run build
+      - uses: actions/configure-pages@v6
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: dist
+          name: playground-${{ github.run_id }}-${{ github.run_attempt }}
+          retention-days: 1
+      - name: Wait for artifact visibility
+        run: sleep 15
+      - uses: actions/deploy-pages@v5
+        id: deployment
+        continue-on-error: true
+        with:
+          artifact_name: playground-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Wait before retry
+        if: steps.deployment.outcome == 'failure'
+        run: sleep 15
+      - uses: actions/deploy-pages@v5
+        if: steps.deployment.outcome == 'failure'
+        with:
+          artifact_name: playground-${{ github.run_id }}-${{ github.run_attempt }}
+  remove-retired-artifacts:
+    needs: deploy
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - name: Remove previous scouting run artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          CURRENT_RUN: ${{ github.run_id }}
+        run: |
+          python3 - <<'PY'
+          import json, os, urllib.request
+          base = 'https://api.github.com/repos/' + os.environ['REPOSITORY']
+          headers = {'Authorization': 'Bearer ' + os.environ['GH_TOKEN'], 'Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28'}
+          def request(path, method='GET'):
+              with urllib.request.urlopen(urllib.request.Request(base+path, headers=headers, method=method), timeout=30) as response:
+                  return json.load(response) if method == 'GET' else None
+          # The replacement has no roster files. Delete old downloadable builds too.
+          page = 1
+          old = []
+          while True:
+              runs = request(f'/actions/runs?per_page=100&page={page}')['workflow_runs']
+              if not runs: break
+              old.extend(r for r in runs if str(r['id']) != os.environ['CURRENT_RUN'] and r['name'] == 'Publish scouting report')
+              page += 1
+          removed = 0
+          for run in old:
+              if run['status'] != 'completed':
+                  request(f"/actions/runs/{run['id']}/cancel", 'POST')
+                  continue
+              request(f"/actions/runs/{run['id']}", 'DELETE')
+              removed += 1
+          print(f'Removed {removed} retired scouting runs and their artifacts.')
+          PY
