@@ -45,39 +45,3 @@ jobs:
         if: steps.deployment.outcome == 'failure'
         with:
           artifact_name: playground-${{ github.run_id }}-${{ github.run_attempt }}
-  remove-retired-artifacts:
-    needs: deploy
-    runs-on: ubuntu-latest
-    permissions:
-      actions: write
-    steps:
-      - name: Remove previous scouting run artifacts
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPOSITORY: ${{ github.repository }}
-          CURRENT_RUN: ${{ github.run_id }}
-        run: |
-          python3 - <<'PY'
-          import json, os, urllib.request
-          base = 'https://api.github.com/repos/' + os.environ['REPOSITORY']
-          headers = {'Authorization': 'Bearer ' + os.environ['GH_TOKEN'], 'Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28'}
-          def request(path, method='GET'):
-              with urllib.request.urlopen(urllib.request.Request(base+path, headers=headers, method=method), timeout=30) as response:
-                  return json.load(response) if method == 'GET' else None
-          # The replacement has no roster files. Delete old downloadable builds too.
-          page = 1
-          old = []
-          while True:
-              runs = request(f'/actions/runs?per_page=100&page={page}')['workflow_runs']
-              if not runs: break
-              old.extend(r for r in runs if str(r['id']) != os.environ['CURRENT_RUN'] and r['name'] == 'Publish scouting report')
-              page += 1
-          removed = 0
-          for run in old:
-              if run['status'] != 'completed':
-                  request(f"/actions/runs/{run['id']}/cancel", 'POST')
-                  continue
-              request(f"/actions/runs/{run['id']}", 'DELETE')
-              removed += 1
-          print(f'Removed {removed} retired scouting runs and their artifacts.')
-          PY
